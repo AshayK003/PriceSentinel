@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'preact/hooks';
+import { useState, useEffect, useCallback, useRef } from 'preact/hooks';
 import type { WatchedPage } from '~/lib/storage';
 
 interface ChangeEntry {
@@ -13,19 +13,81 @@ interface PageStatus {
   lastChecked: string;
 }
 
+/* ── Utility ──────────────────────────────────────────── */
+
+function timeAgo(ts: string): string {
+  const diff = Date.now() - new Date(ts).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.floor(hrs / 24)}d ago`;
+}
+
+function plural(n: number, w: string): string {
+  return n === 1 ? w : `${w}s`;
+}
+
+/* ── Spinner component ─────────────────────────────────── */
+
+function Spinner({ label = 'Loading' }: { label?: string }) {
+  return (
+    <span class="spinner" role="img" aria-label={label} />
+  );
+}
+
+/* ── Main popup component ─────────────────────────────── */
+
 export function Popup() {
   const [pages, setPages] = useState<WatchedPage[]>([]);
   const [pageStatuses, setPageStatuses] = useState<Record<string, PageStatus>>({});
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [backendStatus, setBackendStatus] = useState<'checking' | 'connected' | 'disconnected'>('checking');
+  const [backendUrl, setBackendUrl] = useState('');
+
   const [currentTabUrl, setCurrentTabUrl] = useState('');
   const [currentTabTitle, setCurrentTabTitle] = useState('');
   const [selector, setSelector] = useState('');
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [currentWatched, setCurrentWatched] = useState(false);
+  const [addError, setAddError] = useState<string | null>(null);
+  const [addingPage, setAddingPage] = useState(false);
+
   const [expandedPage, setExpandedPage] = useState<string | null>(null);
   const [pageChanges, setPageChanges] = useState<Record<string, ChangeEntry[]>>({});
+  const [loadingChanges, setLoadingChanges] = useState<Set<string>>(new Set());
   const [pollingPages, setPollingPages] = useState<Set<string>>(new Set());
 
+  const refreshCounter = useRef(0);
+
+  /* ── Data fetching ──────────────────────────────────── */
+
+  const refreshData = useCallback(() => {
+    const tag = ++refreshCounter.current;
+    setLoadError(null);
+
+    chrome.runtime.sendMessage({ type: 'GET_PAGES' }, (res) => {
+      // Guard against stale responses after rapid refresh
+      if (tag !== refreshCounter.current) return;
+      if (chrome.runtime.lastError) {
+        setLoadError(chrome.runtime.lastError.message ?? 'Failed to load pages');
+        setLoading(false);
+        return;
+      }
+      setPages(res?.pages ?? []);
+      setLoading(false);
+    });
+
+    chrome.runtime.sendMessage({ type: 'GET_CHANGE_COUNTS' }, (res) => {
+      if (tag !== refreshCounter.current) return;
+      if (res?.statuses) setPageStatuses(res.statuses);
+    });
+  }, []);
+
   useEffect(() => {
+    /* Get current tab info */
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       const tab = tabs[0];
       if (tab?.url) {
@@ -33,32 +95,49 @@ export function Popup() {
         setCurrentTabTitle(tab.title || tab.url);
       }
     });
-    refreshData();
-  }, []);
 
+    /* Check backend connectivity */
+    chrome.runtime.sendMessage({ type: 'GET_BACKEND_STATUS' }, (res) => {
+      if (res?.configured && res?.apiUrl) {
+        setBackendStatus('connected');
+        setBackendUrl(res.apiUrl);
+      } else {
+        setBackendStatus('disconnected');
+      }
+    });
+
+    refreshData();
+  }, [refreshData]);
+
+  /* Sync local watched state with current tab URL */
   useEffect(() => {
     const existing = pages.find((p) => p.url === currentTabUrl);
     setCurrentWatched(!!existing);
     if (existing?.selector) setSelector(existing.selector);
+    else setSelector('');
   }, [pages, currentTabUrl]);
 
-  const [currentWatched, setCurrentWatched] = useState(false);
-
-  function refreshData() {
-    chrome.runtime.sendMessage({ type: 'GET_PAGES' }, (res) => {
-      const watched = res?.pages ?? [];
-      setPages(watched);
-      setLoading(false);
-    });
-    chrome.runtime.sendMessage({ type: 'GET_CHANGE_COUNTS' }, (res) => {
-      if (res?.statuses) setPageStatuses(res.statuses);
-    });
-  }
+  /* ── Handlers ───────────────────────────────────────── */
 
   const handleWatchPage = () => {
+    setAddError(null);
+    setAddingPage(true);
     chrome.runtime.sendMessage(
-      { type: 'ADD_PAGE', url: currentTabUrl, title: currentTabTitle, selector: selector || undefined },
-      () => refreshData(),
+      {
+        type: 'ADD_PAGE',
+        url: currentTabUrl,
+        title: currentTabTitle,
+        selector: selector || undefined,
+      },
+      (res) => {
+        setAddingPage(false);
+        if (res?.ok) {
+          setShowAdvanced(false);
+          refreshData();
+        } else {
+          setAddError(res?.error ?? 'Failed to add page');
+        }
+      },
     );
   };
 
@@ -67,6 +146,8 @@ export function Popup() {
       setPages((prev) => prev.filter((p) => p.url !== currentTabUrl));
       setCurrentWatched(false);
       setSelector('');
+      setAddError(null);
+      setShowAdvanced(false);
     });
   };
 
@@ -82,10 +163,13 @@ export function Popup() {
 
   const handleRemove = (url: string) => {
     chrome.runtime.sendMessage({ type: 'REMOVE_PAGE', url }, () => refreshData());
-    if (expandedPage === url) setExpandedPage(null);
+    if (expandedPage === url) {
+      setExpandedPage(null);
+      setPageChanges((prev) => { const n = { ...prev }; delete n[url]; return n; });
+    }
   };
 
-  const handleCheckNow = async (url: string) => {
+  const handleCheckNow = (url: string) => {
     setPollingPages((prev) => new Set(prev).add(url));
     chrome.runtime.sendMessage({ type: 'POLL_NOW', url }, () => {
       setPollingPages((prev) => { const n = new Set(prev); n.delete(url); return n; });
@@ -94,117 +178,297 @@ export function Popup() {
   };
 
   const toggleExpand = (url: string) => {
-    if (expandedPage === url) { setExpandedPage(null); return; }
+    if (expandedPage === url) {
+      setExpandedPage(null);
+      return;
+    }
+
     setExpandedPage(url);
+
     if (!pageChanges[url]) {
+      setLoadingChanges((prev) => new Set(prev).add(url));
       chrome.runtime.sendMessage({ type: 'GET_CHANGES', url }, (res) => {
-        if (res?.changes) setPageChanges((prev) => ({ ...prev, [url]: res.changes }));
+        setLoadingChanges((prev) => { const n = new Set(prev); n.delete(url); return n; });
+        if (res?.changes) {
+          setPageChanges((prev) => ({ ...prev, [url]: res.changes }));
+        }
       });
     }
   };
 
-  const timeAgo = (ts: string) => {
-    const diff = Date.now() - new Date(ts).getTime();
-    const mins = Math.floor(diff / 60000);
-    if (mins < 1) return 'just now';
-    if (mins < 60) return `${mins}m ago`;
-    const hrs = Math.floor(mins / 60);
-    if (hrs < 24) return `${hrs}h ago`;
-    return `${Math.floor(hrs / 24)}d ago`;
-  };
+  /* ── States: loading, error, empty ──────────────────── */
+
+  if (loading) {
+    return (
+      <div class="popup">
+        <header>
+          <div class="header-left">
+            <h1>PriceSentinel</h1>
+          </div>
+        </header>
+        <div class="skeleton" role="status" aria-label="Loading watched pages">
+          <div class="skeleton-row" />
+          <div class="skeleton-row" />
+          <div class="skeleton-row" />
+        </div>
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div class="popup">
+        <header>
+          <div class="header-left">
+            <h1>PriceSentinel</h1>
+          </div>
+          <div class="header-actions">
+            <button class="btn btn-ghost btn-icon" onClick={refreshData} aria-label="Retry loading">
+              ↻
+            </button>
+          </div>
+        </header>
+        <div class="state-message" role="alert">
+          <div class="state-icon">⚠️</div>
+          <div class="state-title">Failed to load</div>
+          <p>{loadError}</p>
+          <div class="state-action">
+            <button class="btn btn-primary btn-sm" onClick={refreshData}>
+              Retry
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  /* ── Render ─────────────────────────────────────────── */
+
+  const changedCount = pages.filter((p) => (pageStatuses[p.url]?.changes ?? 0) > 0).length;
 
   return (
     <div class="popup">
+      {/* ── Header ───────────────────────────────────── */}
       <header>
-        <h1>PriceSentinel</h1>
-        <div class="header-right">
-          <span class="badge-count">{pages.filter((p) => (pageStatuses[p.url]?.changes ?? 0) > 0).length} changed</span>
-          <button class="btn btn-icon" onClick={refreshData} title="Refresh">↻</button>
+        <div class="header-left">
+          <h1>PriceSentinel</h1>
+          {changedCount > 0 && (
+            <span class="header-badge">
+              {changedCount} {plural(changedCount, 'change')}
+            </span>
+          )}
+        </div>
+        <div class="header-actions">
+          <button class="btn btn-ghost btn-icon" onClick={refreshData} aria-label="Refresh page list">
+            ↻
+          </button>
         </div>
       </header>
 
+      {/* ── Backend status ───────────────────────────── */}
+      <div class="backend-status" role="status" aria-live="polite">
+        <span class={`backend-dot ${backendStatus}`} />
+        {backendStatus === 'checking' && 'Checking backend…'}
+        {backendStatus === 'connected' && `Backend connected`}
+        {backendStatus === 'disconnected' && 'Backend not configured — open Settings'}
+      </div>
+
+      {/* ── Current page section ─────────────────────── */}
       {currentTabUrl && (
-        <div class="current-page">
-          <span class="page-label">Current page</span>
-          <span class="page-name">{currentTabTitle}</span>
+        <section class="current-page" aria-label="Current page">
+          <div class="current-page-header">
+            <span class="current-page-title">{currentTabTitle}</span>
+            <span class="current-page-url">{currentTabUrl}</span>
+          </div>
+
           {currentWatched ? (
             <>
               {selector && <span class="selector-badge">CSS: {selector}</span>}
-              <button class="btn btn-unwatch" onClick={handleUnwatchPage}>✕ Unwatch</button>
+              <div class="current-page-actions">
+                <button class="btn btn-danger btn-sm" onClick={handleUnwatchPage} aria-label={`Unwatch ${currentTabTitle}`}>
+                  ✕ Unwatch
+                </button>
+              </div>
             </>
           ) : (
             <>
-              <button class="btn btn-watch" onClick={handleWatchPage}>+ Watch this page</button>
-              <button class="btn btn-outline" onClick={() => setShowAdvanced(!showAdvanced)}>
-                {showAdvanced ? '− Less' : '+ Advanced'}
-              </button>
+              {addError && (
+                <div class="state-message" role="alert" style="padding: 8px; font-size: 12px;">
+                  <p style="color: var(--color-danger);">{addError}</p>
+                </div>
+              )}
+              <div class="current-page-actions">
+                <button
+                  class="btn btn-primary btn-sm"
+                  onClick={handleWatchPage}
+                  disabled={addingPage}
+                >
+                  {addingPage && <Spinner />}
+                  + Watch this page
+                </button>
+                <button
+                  class="btn btn-soft btn-sm"
+                  onClick={() => setShowAdvanced(!showAdvanced)}
+                  aria-expanded={showAdvanced}
+                  aria-controls="selector-section"
+                >
+                  {showAdvanced ? '− Less' : '+ CSS selector'}
+                </button>
+              </div>
               {showAdvanced && (
-                <div class="advanced-section">
-                  <label for="selector-input">CSS selector (optional)</label>
+                <div id="selector-section" class="advanced-section">
+                  <label for="selector-input">CSS selector <span class="help-text">(optional)</span></label>
                   <div class="selector-row">
-                    <input id="selector-input" class="input" type="text"
-                      placeholder=".pricing-card .price" value={selector}
-                      onInput={(e) => setSelector((e.target as HTMLInputElement).value)} />
-                    <button class="btn btn-pick" onClick={handlePickFromPage}>Pick</button>
+                    <input
+                      id="selector-input"
+                      class="input"
+                      type="text"
+                      placeholder=".pricing-card .price"
+                      value={selector}
+                      onInput={(e) => setSelector((e.target as HTMLInputElement).value)}
+                      aria-describedby="selector-help"
+                    />
+                    <button class="btn btn-soft btn-sm" onClick={handlePickFromPage} aria-label="Pick element from page">
+                      Pick
+                    </button>
                   </div>
-                  <p class="help-text">Target a specific element. Leave empty to watch the whole page.</p>
+                  <p id="selector-help" class="help-text">
+                    Target a specific element. Leave empty to watch the whole page.
+                  </p>
                 </div>
               )}
             </>
           )}
-        </div>
+        </section>
       )}
 
-      {loading && <p class="status">Loading...</p>}
+      {/* ── Watched pages list ────────────────────────── */}
+      {pages.length === 0 ? (
+        <div class="state-message">
+          <div class="state-icon">👀</div>
+          <div class="state-title">No pages watched yet</div>
+          <p>Visit a pricing page and click <strong>+ Watch this page</strong> above to start tracking changes.</p>
+          <p style="font-size: 12px; color: var(--color-text-muted);">
+            You can track up to 5 pages on the free plan.
+          </p>
+        </div>
+      ) : (
+        <ul class="page-list" role="list" aria-label="Watched pages">
+          {pages.map((page) => {
+            const status = pageStatuses[page.url];
+            const changeCount = status?.changes ?? 0;
+            const isPolling = pollingPages.has(page.url);
+            const isExpanded = expandedPage === page.url;
+            const hasChanges = changeCount > 0;
+            const changes = pageChanges[page.url];
+            const isLoadingChanges = loadingChanges.has(page.url);
 
-      {!loading && pages.length === 0 && <p class="empty">No pages watched yet. Visit a pricing page and click "Watch this page".</p>}
-
-      <ul class="page-list">
-        {pages.map((page) => {
-          const status = pageStatuses[page.url];
-          const changeCount = status?.changes ?? 0;
-          const isPolling = pollingPages.has(page.url);
-          const isExpanded = expandedPage === page.url;
-          const changes = pageChanges[page.url] ?? [];
-
-          return (
-            <li key={page.url} class={isExpanded ? 'expanded' : ''}>
-              <div class="page-row" onClick={() => changeCount > 0 && toggleExpand(page.url)}>
-                <div class="page-info">
-                  <span class="page-title">{page.title || page.url}</span>
-                  <span class="page-url">{page.url}</span>
-                  {status?.lastChecked && <span class="last-checked">checked {timeAgo(status.lastChecked)}</span>}
-                </div>
-                <div class="page-actions">
-                  {changeCount > 0 && <span class="change-badge">{changeCount} change{changeCount !== 1 ? 's' : ''}</span>}
-                  <button class="btn btn-sm" onClick={(e) => { e.stopPropagation(); handleCheckNow(page.url); }}
-                    disabled={isPolling}>{isPolling ? '…' : 'Check'}</button>
-                  <button class="remove-btn" onClick={(e) => { e.stopPropagation(); handleRemove(page.url); }}>✕</button>
-                </div>
-              </div>
-              {isExpanded && (
-                <div class="change-list">
-                  {changes.length === 0 && <p class="no-changes">No changes yet.</p>}
-                  {changes.map((c) => (
-                    <div key={c.id} class="change-entry">
-                      <div class="change-summary">{c.summary}</div>
-                      <div class="change-time">{timeAgo(c.created_at)}</div>
-                      {c.diff.filter((d) => d.type !== 'unchanged').slice(0, 5).map((seg, i) => (
-                        <div key={i} class={`diff-segment diff-${seg.type}`}>{seg.text.slice(0, 120)}</div>
-                      ))}
-                      {c.diff.filter((d) => d.type !== 'unchanged').length > 5 &&
-                        <div class="more-diff">… and {c.diff.filter((d) => d.type !== 'unchanged').length - 5} more</div>}
+            return (
+              <li
+                key={page.url}
+                class={`page-list-item${isExpanded ? ' expanded' : ''}${hasChanges ? ' has-changes' : ''}`}
+              >
+                <div
+                  class={`page-row${hasChanges ? ' clickable' : ''}`}
+                  onClick={() => hasChanges && toggleExpand(page.url)}
+                  role={hasChanges ? 'button' : undefined}
+                  tabIndex={hasChanges ? 0 : undefined}
+                  onKeyDown={(e) => {
+                    if (hasChanges && (e.key === 'Enter' || e.key === ' ')) {
+                      e.preventDefault();
+                      toggleExpand(page.url);
+                    }
+                  }}
+                  aria-expanded={hasChanges ? isExpanded : undefined}
+                  aria-label={hasChanges ? `${page.title || page.url} — ${changeCount} ${plural(changeCount, 'change')}` : page.title || page.url}
+                >
+                  <div class="page-info">
+                    <span class="page-title">{page.title || page.url}</span>
+                    <span class="page-url">{page.url}</span>
+                    <div class="page-meta">
+                      {status?.lastChecked && (
+                        <span class="last-checked">checked {timeAgo(status.lastChecked)}</span>
+                      )}
                     </div>
-                  ))}
+                  </div>
+                  <div class="page-actions">
+                    {hasChanges && <span class="change-badge">{changeCount}</span>}
+                    <button
+                      class="btn btn-soft btn-sm"
+                      onClick={(e) => { e.stopPropagation(); handleCheckNow(page.url); }}
+                      disabled={isPolling}
+                      aria-label={`Check ${page.title || page.url} for changes`}
+                    >
+                      {isPolling ? <Spinner /> : 'Check'}
+                    </button>
+                    <button
+                      class="remove-btn"
+                      onClick={(e) => { e.stopPropagation(); handleRemove(page.url); }}
+                      aria-label={`Remove ${page.title || page.url} from watch list`}
+                      title="Remove"
+                    >
+                      ✕
+                    </button>
+                  </div>
                 </div>
-              )}
-            </li>
-          );
-        })}
-      </ul>
 
+                {/* Expanded change history */}
+                {isExpanded && (
+                  <div class="change-list" role="region" aria-label={`Changes for ${page.title || page.url}`}>
+                    {isLoadingChanges && (
+                      <div class="changes-loading">
+                        <Spinner /> Loading changes…
+                      </div>
+                    )}
+                    {!isLoadingChanges && (!changes || changes.length === 0) && (
+                      <p class="state-message" style="padding: 12px; font-size: 12px;">
+                        No changes recorded yet.
+                      </p>
+                    )}
+                    {!isLoadingChanges && changes?.map((c) => (
+                      <div key={c.id} class="change-entry">
+                        <div class="change-entry-header">
+                          <span class="change-summary">{c.summary}</span>
+                          <span class="change-time">{timeAgo(c.created_at)}</span>
+                        </div>
+                        {c.diff
+                          .filter((d) => d.type !== 'unchanged')
+                          .slice(0, 5)
+                          .map((seg, i) => (
+                            // biome-ignore lint/suspicious/noArrayIndexKey: stable order, small list
+                            <div key={i} class={`diff-segment diff-${seg.type}`}>
+                              {seg.text.slice(0, 120)}
+                            </div>
+                          ))}
+                        {c.diff.filter((d) => d.type !== 'unchanged').length > 5 && (
+                          <div class="more-diff">
+                            … and {c.diff.filter((d) => d.type !== 'unchanged').length - 5} more
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+
+      {/* ── Footer ────────────────────────────────────── */}
       <footer>
-        <a href="#" onClick={(e) => { e.preventDefault(); chrome.runtime.openOptionsPage(); }}>Settings</a>
+        <a href="#" class="footer-link" onClick={(e) => { e.preventDefault(); chrome.runtime.openOptionsPage(); }}>
+          Settings
+        </a>
+        <a
+          href="https://github.com/AshayK003/PriceSentinel"
+          target="_blank"
+          rel="noopener noreferrer"
+          class="footer-link"
+          onClick={(e) => { e.preventDefault(); chrome.tabs.create({ url: 'https://github.com/AshayK003/PriceSentinel' }); }}
+        >
+          GitHub
+        </a>
       </footer>
     </div>
   );
