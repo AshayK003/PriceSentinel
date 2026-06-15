@@ -108,7 +108,7 @@ def test_get_changes_with_data(client, db):
 
 
 def test_unread_counts(client, db):
-    """Only pages with diffs appear in unread-count."""
+    """All pages appear in unread-count with changes + last_checked."""
     page_a = WatchedPage(url="https://a.com", title="A")
     page_b = WatchedPage(url="https://b.com", title="B")
     db.add(page_a)
@@ -126,8 +126,12 @@ def test_unread_counts(client, db):
     resp = client.get("/changes/unread-count")
     assert resp.status_code == 200
     data = resp.json()
-    assert data["https://a.com"] == 1
-    assert "https://b.com" not in data
+    # Page A: has 1 diff + 1 snapshot -> changes=1, last_checked set
+    assert data["https://a.com"]["changes"] == 1
+    assert data["https://a.com"]["last_checked"] is not None
+    # Page B: 0 diffs, 0 snapshots -> changes=0, last_checked=None
+    assert data["https://b.com"]["changes"] == 0
+    assert data["https://b.com"]["last_checked"] is None
 
 
 def test_trigger_poll(client, db):

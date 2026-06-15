@@ -43,11 +43,11 @@ function invalidate(key?: string) {
 
 /* ── Helpers ─────────────────────────────────────────── */
 
-function fetchStatuses(): Promise<Record<string, { changes: number; lastChecked: string }>> {
+function fetchStatuses(): Promise<Record<string, { changes: number; lastChecked: string | null }>> {
   return getChangeCounts().then((counts) => {
-    const statuses: Record<string, { changes: number; lastChecked: string }> = {};
-    for (const [url, count] of Object.entries(counts)) {
-      statuses[url] = { changes: count, lastChecked: new Date().toISOString() };
+    const statuses: Record<string, { changes: number; lastChecked: string | null }> = {};
+    for (const [url, info] of Object.entries(counts)) {
+      statuses[url] = { changes: info.changes, lastChecked: info.last_checked };
     }
     return statuses;
   });
@@ -184,7 +184,7 @@ export default defineBackground(() => {
   // Update badge text on alarm heartbeat
   chrome.alarms.onAlarm.addListener(() => {
     getChangeCounts().then((counts) => {
-      const total = Object.values(counts).reduce((s, c) => s + c, 0);
+      const total = Object.values(counts).reduce((s, c) => s + c.changes, 0);
       chrome.action.setBadgeText({ text: total > 0 ? String(total) : '' });
       chrome.action.setBadgeBackgroundColor({ color: '#e53e3e' });
     }).catch(() => {});

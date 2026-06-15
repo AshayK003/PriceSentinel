@@ -3,7 +3,7 @@ import time
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func
-from models import get_db, DiffResult, WatchedPage
+from models import get_db, DiffResult, WatchedPage, PageSnapshot
 from schemas import ChangeResponse
 
 router = APIRouter(prefix="/changes", tags=["changes"])
@@ -61,9 +61,12 @@ async def get_changes(
 
 @router.get("/unread-count")
 async def unread_counts(db: Session = Depends(get_db)):
-    """Return count of changes per watched page.
+    """Return count of changes + last poll time per watched page.
 
-    PERFORMANCE: single GROUP BY query (1 roundtrip instead of N+1).
+    Returns ALL watched pages (not just those with changes) so the
+    frontend can show "checked X ago" even for pages with 0 changes.
+
+    PERFORMANCE: 2 GROUP BY subqueries + outer joins (1 roundtrip).
                  Cached for 30s to survive rapid popup opens.
     """
     global _unread_cache
@@ -73,6 +76,7 @@ async def unread_counts(db: Session = Depends(get_db)):
     if _unread_cache and (now - _unread_cache[0]) < _UNREAD_TTL:
         return _unread_cache[1]
 
+    # Subquery A: diff count per page
     sub = (
         db.query(
             DiffResult.page_id,
@@ -81,12 +85,31 @@ async def unread_counts(db: Session = Depends(get_db)):
         .group_by(DiffResult.page_id)
         .subquery()
     )
+
+    # Subquery B: most recent poll timestamp per page
+    last_poll_sub = (
+        db.query(
+            PageSnapshot.page_id,
+            func.max(PageSnapshot.fetched_at).label("last_poll"),
+        )
+        .group_by(PageSnapshot.page_id)
+        .subquery()
+    )
+
     rows = (
-        db.query(WatchedPage.url, sub.c.cnt)
+        db.query(WatchedPage.url, sub.c.cnt, last_poll_sub.c.last_poll)
         .outerjoin(sub, WatchedPage.id == sub.c.page_id)
+        .outerjoin(last_poll_sub, WatchedPage.id == last_poll_sub.c.page_id)
         .all()
     )
-    result = {url: cnt for url, cnt in rows if cnt and cnt > 0}
+
+    result = {
+        url: {
+            "changes": cnt or 0,
+            "last_checked": last_poll.isoformat() if last_poll else None,
+        }
+        for url, cnt, last_poll in rows
+    }
 
     _unread_cache = (now, result)
     return result

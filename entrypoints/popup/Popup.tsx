@@ -10,7 +10,7 @@ interface ChangeEntry {
 
 interface PageStatus {
   changes: number;
-  lastChecked: string;
+  lastChecked: string | null;
 }
 
 /* ── Utilities ───────────────────────────────────────── */

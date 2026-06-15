@@ -49,7 +49,12 @@ export async function pollNow(url: string): Promise<Response> {
   });
 }
 
-export async function getChangeCounts(): Promise<Record<string, number>> {
+export interface PageCountInfo {
+  changes: number;
+  last_checked: string | null;
+}
+
+export async function getChangeCounts(): Promise<Record<string, PageCountInfo>> {
   const config = await getConfig();
   if (!config.apiUrl) return {};
   try {
