@@ -2,9 +2,11 @@ import { defineBackground } from 'wxt/utils/define-background';
 import { getWatchedPages, addWatchedPage, removeWatchedPage } from '~/lib/storage';
 import { registerPage, unregisterPage, getChangeCounts, pollNow, getChangesForPage } from '~/lib/api-client';
 
-/* ── In-memory cache ─────────────────────────────────── */
+/* ── In-memory cache (per-key generation counter) ──────── */
 // ponytail: simple TTL dict prevents unnecessary chrome.storage reads
 // on consecutive popup opens. Cache is lost on service worker idle — acceptable.
+// CRITICAL: per-key gen counters — a shared global counter would
+// discard valid responses when another key's fetch races past.
 interface CacheEntry<T> {
   data: T;
   at: number;
@@ -12,17 +14,17 @@ interface CacheEntry<T> {
 const TTL = 30_000; // 30 seconds
 
 const caches: Record<string, CacheEntry<unknown>> = {};
-let gen = 0; // stale-response guard
+const gens: Record<string, number> = {};
 
 function cached<T>(key: string, fn: () => Promise<T>): Promise<T> {
-  gen++;
-  const tag = gen;
+  gens[key] = (gens[key] || 0) + 1;
+  const tag = gens[key];
   const hit = caches[key] as CacheEntry<T> | undefined;
   if (hit && (Date.now() - hit.at) < TTL) {
     return Promise.resolve(hit.data);
   }
   return fn().then((data) => {
-    if (tag === gen) { // only cache freshest response
+    if (gens[key] === tag) {
       caches[key] = { data, at: Date.now() };
     }
     return data;
@@ -32,8 +34,10 @@ function cached<T>(key: string, fn: () => Promise<T>): Promise<T> {
 function invalidate(key?: string) {
   if (key) {
     delete caches[key];
+    delete gens[key];
   } else {
     Object.keys(caches).forEach((k) => delete caches[k]);
+    Object.keys(gens).forEach((k) => delete gens[k]);
   }
 }
 
@@ -120,11 +124,16 @@ export default defineBackground(() => {
         return true;
 
       case 'GET_BACKEND_STATUS':
-        import('~/lib/api-client').then((api) =>
-          api.getConfig().then((cfg) =>
-            sendResponse({ configured: !!cfg.apiUrl, apiUrl: cfg.apiUrl })
-          )
-        );
+        (async () => {
+          try {
+            const cfg = (await chrome.storage.sync.get('apiUrl')) as { apiUrl?: string };
+            if (!cfg.apiUrl) return sendResponse({ connected: false, apiUrl: '' });
+            const res = await fetch(`${cfg.apiUrl}/health`, { signal: AbortSignal.timeout(5000) });
+            sendResponse({ connected: res.ok, apiUrl: cfg.apiUrl });
+          } catch {
+            sendResponse({ connected: false, apiUrl: cfg.apiUrl ?? '' });
+          }
+        })();
         return true;
 
       case 'GET_CHANGE_COUNTS':
@@ -160,6 +169,14 @@ export default defineBackground(() => {
 
       case 'OPEN_POPUP':
         chrome.action.openPopup();
+        return false;
+
+      case 'SYNC_PAGES':
+        getWatchedPages().then((pages) => {
+          for (const p of pages) {
+            registerPage(p.url, p.title, p.selector).catch(() => {});
+          }
+        });
         return false;
     }
   });

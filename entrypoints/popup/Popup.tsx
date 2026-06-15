@@ -99,9 +99,9 @@ export function Popup() {
       }
     });
 
-    /* Check backend connectivity (cached in background) */
+    /* Check backend connectivity with an actual /health ping */
     chrome.runtime.sendMessage({ type: 'GET_BACKEND_STATUS' }, (res) => {
-      if (res?.configured && res?.apiUrl) {
+      if (res?.connected) {
         setBackendStatus('connected');
         setBackendUrl(res.apiUrl);
       } else {
@@ -180,9 +180,13 @@ export function Popup() {
 
   const handleCheckNow = (url: string) => {
     setPollingPages((prev) => new Set(prev).add(url));
-    chrome.runtime.sendMessage({ type: 'POLL_NOW', url }, () => {
+    chrome.runtime.sendMessage({ type: 'POLL_NOW', url }, (res) => {
       setPollingPages((prev) => { const n = new Set(prev); n.delete(url); return n; });
-      refreshData();
+      if (res && !res.ok) {
+        setAddError(res.error || 'Check failed');
+      } else {
+        refreshData();
+      }
     });
   };
 

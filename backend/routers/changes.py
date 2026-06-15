@@ -39,7 +39,7 @@ async def get_changes(
     )
     result = []
     for d in diffs:
-        diff = d.diff_json
+        diff = d.diff_json or []  # guard against NULL in DB
         if truncate and diff:
             diff = [
                 {**seg, "text": seg["text"][:truncate]}

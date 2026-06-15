@@ -49,6 +49,7 @@ export function Options() {
     chrome.storage.sync.set(settings, () => {
       setSaved(true);
       setTestResult(null);
+      chrome.runtime.sendMessage({ type: 'SYNC_PAGES' });
       setTimeout(() => setSaved(false), 2500);
     });
   };
