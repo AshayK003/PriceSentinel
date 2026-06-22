@@ -1,6 +1,6 @@
 /**
  * API client for the PriceSentinel backend.
- * ponytail: bare fetch, no axios/fetch wrapper lib needed.
+ * Bare fetch, no axios/fetch wrapper lib needed.
  * Thickens when auth + retry + pagination are needed (Phase 2).
  */
 

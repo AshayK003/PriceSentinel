@@ -1,6 +1,6 @@
 # PriceSentinel — Testing Strategy
 
-**Ponytail:** The goal is not 100% coverage. It's catching real bugs before they reach production with the **simplest stack that works**.
+**Principle:** The goal is not 100% coverage. It's catching real bugs before they reach production with the **simplest stack that works**.
 
 ## Stack
 
@@ -203,7 +203,7 @@ Ranked by bug-catching probability × impact:
 | Service worker (`background.ts`) | Needs `chrome.runtime`, `chrome.storage`, `chrome.alarms` APIs | Test `storage.ts` and `api-client.ts` separately — they're what the worker orchestrates. |
 | Popup UI (`Popup.tsx`) | Preact rendering + chrome.storage | Not worth testing — it reads data from storage and renders it. Most bug surface is in storage layer. |
 
-**Ponytail:** Don't add a browser testing tool (Puppeteer, Playwright) for this project. The content script and popup are thin view layers over tested logic. If they break, it's visually obvious.
+**Recommendation:** Don't add a browser testing tool (Puppeteer, Playwright) for this project. The content script and popup are thin view layers over tested logic. If they break, it's visually obvious.
 
 ---
 
@@ -321,4 +321,4 @@ echo "✅ Backend tests passed"
 | **Dependencies added** | 2 (`pytest`, `httpx`) |
 | **Extension deps added** | 0 (uses `node --test`, built in) |
 | **Time to write (estimated)** | ~2 hours |
-| **Ponytail verdict** | This is the minimum viable test suite. Everything else (Playwright, component tests, CI) should wait until a real user finds a real bug that this suite would have missed. |
+| **Verdict** | This is the minimum viable test suite. Everything else (Playwright, component tests, CI) should wait until a real user finds a real bug that this suite would have missed. |

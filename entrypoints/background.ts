@@ -3,7 +3,7 @@ import { getWatchedPages, addWatchedPage, removeWatchedPage } from '~/lib/storag
 import { registerPage, unregisterPage, getChangeCounts, pollNow, getChangesForPage } from '~/lib/api-client';
 
 /* ── In-memory cache (per-key generation counter) ──────── */
-// ponytail: simple TTL dict prevents unnecessary chrome.storage reads
+// Simple TTL dict prevents unnecessary chrome.storage reads
 // on consecutive popup opens. Cache is lost on service worker idle — acceptable.
 // CRITICAL: per-key gen counters — a shared global counter would
 // discard valid responses when another key's fetch races past.

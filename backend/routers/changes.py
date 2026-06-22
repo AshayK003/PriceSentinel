@@ -8,7 +8,7 @@ from schemas import ChangeResponse
 
 router = APIRouter(prefix="/changes", tags=["changes"])
 
-# ── Simple in-memory cache (ponytail: dict + timestamp beats a decorator
+# ── Simple in-memory cache (dict + timestamp beats a decorator
 #    for FastAPI routes where the Session object isn't hashable) ──
 _unread_cache: tuple[float, dict] | None = None  # (timestamp, data)
 _UNREAD_TTL = 30  # seconds

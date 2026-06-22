@@ -1,7 +1,7 @@
 import { defineContentScript } from 'wxt/utils/define-content-script';
 
 /* ── Injected stylesheet ──────────────────────────────── */
-// ponytail: single <style> tag replaces ~50 lines of Object.assign inline styles
+// Single <style> tag replaces ~50 lines of Object.assign inline styles
 const STYLES = `
   /* Picker */
   .ps-picker-highlight {
@@ -99,7 +99,7 @@ function showToast(msg: string) {
 const styleTag = document.createElement('style');
 styleTag.textContent = STYLES;
 document.head.appendChild(styleTag);
-// ponytail: one style element for all injected UI; beats 3 separate Object.assign blocks
+// One style element for all injected UI; beats 3 separate Object.assign blocks
 
 /* ── Picker mode ──────────────────────────────────────── */
 

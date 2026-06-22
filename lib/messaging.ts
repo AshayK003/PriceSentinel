@@ -7,7 +7,7 @@ export type MessageHandler = (msg: Message, sender: chrome.runtime.MessageSender
 
 /**
  * Register a message handler for the given message type.
- * ponytail: thin wrapper over chrome.runtime.onMessage, no framework.
+ * Thin wrapper over chrome.runtime.onMessage, no framework.
  */
 export function onMessage(type: string, handler: MessageHandler): void {
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {

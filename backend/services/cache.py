@@ -1,7 +1,7 @@
 """
 Simple in-memory TTL cache for expensive endpoints.
 
-ponytail: cachetools is a single small pip package (stdlib pure-Python).
+Uses cachetools (small pip package, pure-Python stdlib).
           Could use functools.lru_cache but TTL eviction needs a 3rd-party lib.
 Tradeoff: cache is per-process, lost on restart. Acceptable for MVP.
           Replace with Redis when scaling beyond 1 instance.

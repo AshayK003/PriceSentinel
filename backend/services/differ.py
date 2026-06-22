@@ -2,7 +2,7 @@
 HTML diff engine using Python's stdlib difflib.
 Returns structured JSON diff (not rendered HTML).
 
-ponytail: SequenceMatcher is stdlib, no npm packages needed.
+SequenceMatcher from stdlib difflib, no npm packages needed.
          Upgrade to semantic HTML diffing if false-positive rate is too high.
          BeautifulSoup4 added for CSS-selector-based element extraction.
 """
